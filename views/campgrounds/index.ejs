@@ -1,0 +1,31 @@
+<%- include("../partials/header") %>
+<div class="container">
+	<header class="jumbotron" >
+		<div class="container">
+		<h1>Welocome To PayLater</h1>
+		<p>Rent Now And Pay Later</p>
+        <p><a class="btn btn-primary btn-lg" href="/campgrounds/new">Add New User</a></p>	
+        		</div>
+
+</header>
+<div class="row text-center" style="display:flex; flex-wrap: wrap;">
+<% campgrounds.forEach(function(campground){ %>
+<% if(currentUser && campground.author.id.equals(currentUser._id)){ %>
+	<div class="col-md-3 col-sm-6">
+		<div class="thumbnail">
+					<img src="<%=campground.image %>">
+			<div class="caption">
+					<h4><%= campground.name %></h4>
+			</div>
+			<p>
+				<a href="/campgrounds/<%=campground.id%>" class="btn btn-primary">More Info</a>
+			</p>
+		</div>
+	</div>
+	<% } %>
+	
+		<% }); %>
+	</div>
+</div>
+<a href="/">goback</a>
+<%- include("../partials/footer") %>
