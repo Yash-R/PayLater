@@ -81,7 +81,7 @@ async function waitForChecksToPass(sha) {
       owner, repo, ref: sha
     });
 
-    console.log(`Combined status: ${statusRes.data.state} (${statusRes.data.statuses.length} statuses)`);
+    console.log(`Combined status: ${statusRes.data.state} (${statusRes} statuses)`);
 
     const combined = statusRes.data;
     // possible states: success, pending, failure
