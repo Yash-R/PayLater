@@ -72,46 +72,27 @@ async function updatePrBranch(pr) {
  * Wait for all checks to pass for the PR's head SHA.
  * Uses Checks API + combined status.
  */
-async function waitForChecksToPass(sha) {
+async function waitForChecksToPass(prHeadSha) {
   const startAt = Date.now();
-  console.log(`Waiting for checks on sha ${sha}`);
+
   while (true) {
-    // Check combined status (legacy) and checks runs
-    const statusRes = await octokit.repos.getCombinedStatusForRef({
-      owner, repo, ref: sha
+    const checksRes = await octokit.checks.listForRef({
+      owner,
+      repo,
+      ref: prHeadSha
     });
 
-    console.log(`Combined status: ${statusRes.data.state} (${statusRes.data} statuses)`);
+    const relevantChecks = checksRes.data.check_runs.filter(
+      check => check.name !== "Auto-Merge Workflow" // ignore this workflow
+    );
 
-    const combined = statusRes.data;
-    // possible states: success, pending, failure
-    const state = combined.state;
-    if (state === "success") {
-      // also ensure all checks runs are completed and successful
-      const checks = await octokit.checks.listForRef({ owner, repo, ref: sha });
-      const allCompleted = checks.data.check_runs.every(c => c.status === "completed");
-      const allSuccess = checks.data.check_runs.every(c => c.conclusion === "success");
-      if (allCompleted && allSuccess) {
-        console.log("All checks completed and successful.");
-        return true;
-      }
-      // if there are no checks at all, combined.state covers it; proceed if combined.success
-      if (checks.data.check_runs.length === 0) {
-        console.log("No checks found, combined state was success.");
-        return true;
-      }
-    }
+    const allCompleted = relevantChecks.every(c => c.status === "completed");
+    const allSuccess = relevantChecks.every(c => c.conclusion === "success");
 
-    if (state === "failure") {
-      console.log("Combined status is failure.");
-      return false;
-    }
+    if (allCompleted && allSuccess) return true;
+    if (allCompleted && !allSuccess) return false;
 
-    const elapsed = (Date.now() - startAt) / 1000;
-    if (elapsed > pollTimeoutSeconds) {
-      console.log(`Timeout waiting for checks (elapsed ${elapsed}s)`);
-      return false;
-    }
+    if ((Date.now() - startAt) / 1000 > pollTimeoutSeconds) return false;
 
     await new Promise(r => setTimeout(r, pollIntervalSeconds * 1000));
   }
