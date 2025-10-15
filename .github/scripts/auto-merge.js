@@ -40,7 +40,7 @@ async function isPRApproved(prNumber) {
   console.log(`PR #${prNumber}: ${approvedCount} approvals, blocking changes: ${hasBlockingChangeRequests}`);
 
   // Require at least 2 distinct approvers and no change requests
-  return true
+  return approvedCount >= 2 && !hasBlockingChangeRequests;
 }
 
 /**
@@ -80,6 +80,9 @@ async function waitForChecksToPass(sha) {
     const statusRes = await octokit.repos.getCombinedStatusForRef({
       owner, repo, ref: sha
     });
+
+    console.log(`Combined status: ${statusRes.data.state} (${statusRes.data.statuses.length} statuses)`);
+
     const combined = statusRes.data;
     // possible states: success, pending, failure
     const state = combined.state;
@@ -157,11 +160,11 @@ async function processPr(pr) {
   const headSha = prRes.data.head.sha;
 
   // Wait for checks
-  // const checksOk = await waitForChecksToPass(headSha);
-  // if (!checksOk) {
-  //   console.log(`#${pr.number} checks did not pass -> skipping`);
-  //   return { status: "skipped", reason: "checks_failed_or_timeout" };
-  // }
+  const checksOk = await waitForChecksToPass(headSha);
+  if (!checksOk) {
+    console.log(`#${pr.number} checks did not pass -> skipping`);
+    return { status: "skipped", reason: "checks_failed_or_timeout" };
+  }
 
   // Merge
   try {
