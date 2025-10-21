@@ -74,6 +74,9 @@ async function processPR(pr) {
 
   // Check label inside code
   const hasLabel = latestPR.labels.some(l => l.name === MERGE_LABEL);
+
+  console.log("Current Labels:", latestPR.labels.map(l => l.name).join(", "));
+
   if (!hasLabel) {
     console.log(`⚠️ PR #${pr.number} does not have label "${MERGE_LABEL}", skipping.`);
     return;
