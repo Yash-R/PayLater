@@ -1,7 +1,5 @@
 import { Octokit } from "@octokit/rest";
 
-
-
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const [owner, repo] = process.env.GITHUB_REPOSITORY.split("/");
 
@@ -11,6 +9,8 @@ const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_SECONDS || "20", 10);
 const POLL_TIMEOUT = parseInt(process.env.POLL_TIMEOUT_SECONDS || "900", 10);
 
 const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
+
+let hadFailure = false;
 
 /**
  * Get all open PRs
@@ -26,7 +26,7 @@ async function getOpenPRs() {
 }
 
 /**
- * Check if PR has enough approvals
+ * Check approvals
  */
 async function hasEnoughApprovals(prNumber) {
   const { data: reviews } = await octokit.pulls.listReviews({
@@ -41,7 +41,7 @@ async function hasEnoughApprovals(prNumber) {
 }
 
 /**
- * Wait for all external CI checks to pass for the PR's latest commit
+ * Wait for external CI checks to pass
  */
 async function waitForChecks(prSha) {
   const start = Date.now();
@@ -74,25 +74,25 @@ async function processPR(pr) {
 
   // Check label inside code
   const hasLabel = latestPR.labels.some(l => l.name === MERGE_LABEL);
-
-  console.log("Current Labels:", latestPR.labels.map(l => l.name).join(", "));
-
   if (!hasLabel) {
-    console.log(`⚠️ PR #${pr.number} does not have label "${MERGE_LABEL}", skipping.`);
+    console.log(`⚠️ PR #${pr.number} missing label "${MERGE_LABEL}"`);
+    hadFailure = true;
     return;
   }
 
   if (latestPR.state !== "open" || latestPR.merged) {
-    console.log(`⚠️ PR #${pr.number} is closed or already merged, skipping.`);
+    console.log(`⚠️ PR #${pr.number} is closed or already merged`);
+    hadFailure = true;
     return;
   }
 
   if (!(await hasEnoughApprovals(pr.number))) {
-    console.log(`⚠️ PR #${pr.number} does not have enough approvals, skipping.`);
+    console.log(`⚠️ PR #${pr.number} does not have enough approvals`);
+    hadFailure = true;
     return;
   }
 
-  // Update branch with latest base branch changes
+  // Update branch
   try {
     console.log(`🔄 Updating branch for PR #${pr.number}...`);
     await octokit.pulls.updateBranch({ owner, repo, pull_number: pr.number });
@@ -100,10 +100,11 @@ async function processPR(pr) {
     console.log(`⚠️ Could not update branch: ${err.message}`);
   }
 
-  // Wait for external checks
+  // Wait for CI
   const checksPassed = await waitForChecks(latestPR.head.sha);
   if (!checksPassed) {
-    console.log(`❌ PR #${pr.number} failed checks or timed out, skipping.`);
+    console.log(`❌ PR #${pr.number} failed CI or timed out`);
+    hadFailure = true;
     return;
   }
 
@@ -117,7 +118,8 @@ async function processPR(pr) {
     });
     console.log(`🎉 PR #${pr.number} merged successfully!`);
   } catch (err) {
-    console.log(`❌ Failed to merge PR #${pr.number}: ${err.message}`);
+    console.log(`❌ Merge failed for PR #${pr.number}: ${err.message}`);
+    hadFailure = true;
   }
 }
 
@@ -132,5 +134,11 @@ async function processPR(pr) {
   for (const pr of prs) {
     await processPR(pr);
   }
-  console.log("✅ Auto Merge Bot run complete.");
+
+  if (hadFailure) {
+    console.log("❌ One or more PRs failed to process. Failing workflow.");
+    process.exit(1);
+  }
+
+  console.log("✅ All PRs processed successfully.");
 })();
