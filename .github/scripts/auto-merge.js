@@ -149,7 +149,7 @@ async function processPr(pr) {
 
   // Merge
   try {
-    const mergeRes = await mergePR(pr.number, `Merge PR #${pr.number}: ${pr.title}`);
+    // const mergeRes = await mergePR(pr.number, `Merge PR #${pr.number}: ${pr.title}`);
     console.log(`#${pr.number} merged:`, mergeRes.sha || mergeRes.message || mergeRes);
     return { status: "merged", sha: mergeRes.sha || null };
   } catch (err) {
