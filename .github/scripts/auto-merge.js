@@ -132,6 +132,8 @@ async function processPR(pr) {
     return;
   }
 
+
+  
   // Merge PR
   try {
     await octokit.pulls.merge({
