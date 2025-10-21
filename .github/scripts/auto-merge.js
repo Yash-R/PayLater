@@ -3,26 +3,50 @@ import { Octokit } from "@octokit/rest";
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const [owner, repo] = process.env.GITHUB_REPOSITORY.split("/");
 
-const MERGE_LABEL = process.env.MERGE_LABEL || "bug";
+const MERGE_LABEL = process.env.MERGE_LABEL || "ready-to-merge";
 const REQUIRED_APPROVALS = parseInt(process.env.REQUIRED_APPROVALS || "2", 10);
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_SECONDS || "20", 10);
 const POLL_TIMEOUT = parseInt(process.env.POLL_TIMEOUT_SECONDS || "900", 10);
 
-const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
+const TRIGGER_PR_NUMBER = process.env.TRIGGER_PR_NUMBER;
+const PUSH_BRANCH = process.env.PUSH_BRANCH;
 
+const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 let hadFailure = false;
 
 /**
- * Get all open PRs
+ * Get PR(s) relevant to the trigger
  */
-async function getOpenPRs() {
-  const { data } = await octokit.pulls.list({
+async function getTriggeredPRs() {
+  if (TRIGGER_PR_NUMBER) {
+    // Triggered by label event
+    const { data: pr } = await octokit.pulls.get({
+      owner,
+      repo,
+      pull_number: TRIGGER_PR_NUMBER,
+    });
+    return [pr];
+  }
+
+  if (PUSH_BRANCH) {
+    // Triggered by push to branch
+    const { data: prs } = await octokit.pulls.list({
+      owner,
+      repo,
+      head: `${owner}:${PUSH_BRANCH}`,
+      state: "open",
+    });
+    return prs;
+  }
+
+  // Fallback: process all open PRs
+  const { data: prs } = await octokit.pulls.list({
     owner,
     repo,
     state: "open",
     per_page: 50,
   });
-  return data;
+  return prs;
 }
 
 /**
@@ -47,7 +71,7 @@ async function waitForChecks(prSha) {
   const start = Date.now();
   while ((Date.now() - start) / 1000 < POLL_TIMEOUT) {
     const { data } = await octokit.checks.listForRef({ owner, repo, ref: prSha });
-    const checks = data.check_runs.filter(c => !c.name.includes("auto-merge"));
+    const checks = data.check_runs.filter(c => !c.name.includes("Auto Merge Bot"));
 
     if (checks.length === 0) return true;
 
@@ -72,7 +96,7 @@ async function processPR(pr) {
 
   const latestPR = (await octokit.pulls.get({ owner, repo, pull_number: pr.number })).data;
 
-  // Check label inside code
+  // Check label
   const hasLabel = latestPR.labels.some(l => l.name === MERGE_LABEL);
   if (!hasLabel) {
     console.log(`⚠️ PR #${pr.number} missing label "${MERGE_LABEL}"`);
@@ -86,11 +110,11 @@ async function processPR(pr) {
     return;
   }
 
-  // if (!(await hasEnoughApprovals(pr.number))) {
-  //   console.log(`⚠️ PR #${pr.number} does not have enough approvals`);
-  //   hadFailure = true;
-  //   return;
-  // }
+  if (!(await hasEnoughApprovals(pr.number))) {
+    console.log(`⚠️ PR #${pr.number} does not have enough approvals`);
+    hadFailure = true;
+    return;
+  }
 
   // Update branch
   try {
@@ -128,8 +152,9 @@ async function processPR(pr) {
  */
 (async function main() {
   console.log(`🚀 Auto Merge Bot started for ${owner}/${repo}`);
-  const prs = await getOpenPRs();
-  if (!prs.length) return console.log("No open PRs found.");
+
+  const prs = await getTriggeredPRs();
+  if (!prs.length) return console.log("No relevant PRs found.");
 
   for (const pr of prs) {
     await processPR(pr);
@@ -140,5 +165,5 @@ async function processPR(pr) {
     process.exit(1);
   }
 
-  console.log("✅ All PRs processed successfully.");
+  console.log("✅ All relevant PRs processed successfully.");
 })();
