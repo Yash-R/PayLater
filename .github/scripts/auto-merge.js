@@ -47,7 +47,9 @@ async function waitForChecks(prSha) {
   const start = Date.now();
   while ((Date.now() - start) / 1000 < POLL_TIMEOUT) {
     const { data } = await octokit.checks.listForRef({ owner, repo, ref: prSha });
-    const checks = data.check_runs.filter(c => !c.name.includes("Auto Merge Bot"));
+    // const checks = data.check_runs.filter(c => !c.name.includes("PullRequestLint"));
+
+    console.log("ADSJKBAKDJbaksjdaksjdaskdjaskd", data.check_runs)
 
     if (checks.length === 0) return true;
 
