@@ -5,7 +5,7 @@ import { Octokit } from "@octokit/rest";
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const [owner, repo] = process.env.GITHUB_REPOSITORY.split("/");
 
-const MERGE_LABEL = process.env.MERGE_LABEL || "bot";
+const MERGE_LABEL = process.env.MERGE_LABEL || "bug";
 const REQUIRED_APPROVALS = parseInt(process.env.REQUIRED_APPROVALS || "2", 10);
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_SECONDS || "20", 10);
 const POLL_TIMEOUT = parseInt(process.env.POLL_TIMEOUT_SECONDS || "900", 10);
