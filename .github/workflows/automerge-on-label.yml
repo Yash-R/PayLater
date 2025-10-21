@@ -1,8 +1,9 @@
 name: Auto Merge Bot
 
 on:
-  push:        # triggers on any commit to any branch
-  workflow_dispatch: # optional manual trigger
+  push:                  # triggers whenever a new commit is pushed
+    branches:
+      - '**'    # all branches
 
 permissions:
   contents: write
@@ -12,10 +13,6 @@ permissions:
 jobs:
   auto-merge:
     runs-on: ubuntu-latest
-    concurrency:
-      group: auto-merge-bot
-      cancel-in-progress: false
-
     steps:
       - uses: actions/checkout@v4
 
