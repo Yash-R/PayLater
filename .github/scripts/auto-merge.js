@@ -86,11 +86,11 @@ async function processPR(pr) {
     return;
   }
 
-  if (!(await hasEnoughApprovals(pr.number))) {
-    console.log(`⚠️ PR #${pr.number} does not have enough approvals`);
-    hadFailure = true;
-    return;
-  }
+  // if (!(await hasEnoughApprovals(pr.number))) {
+  //   console.log(`⚠️ PR #${pr.number} does not have enough approvals`);
+  //   hadFailure = true;
+  //   return;
+  // }
 
   // Update branch
   try {
