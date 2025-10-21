@@ -1,9 +1,10 @@
 name: Auto Merge Bot
 
 on:
-  push:                  # triggers whenever a new commit is pushed
-    branches:
-      - '**'    # all branches
+  push:           # triggers on any commit
+  pull_request:
+    types:
+      - labeled   # triggers when a label is added to a PR
 
 permissions:
   contents: write
