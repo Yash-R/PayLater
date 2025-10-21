@@ -1,206 +1,131 @@
-// .github/scripts/auto-merge.js
-const { Octokit } = require("@octokit/rest");
+import { Octokit } from "@octokit/rest";
 
-const labelToWatch = process.env.AUTOLABEL_NAME || "bug";
-const mergeMethod = (process.env.MERGE_METHOD || "merge"); // "merge" | "squash" | "rebase"
-const pollIntervalSeconds = parseInt(process.env.POLL_INTERVAL_SECONDS || "10", 10);
-const pollTimeoutSeconds = parseInt(process.env.POLL_TIMEOUT_SECONDS || "900", 10);
-
-if (!process.env.GITHUB_REPOSITORY) {
-  console.error("GITHUB_REPOSITORY not found in env - aborting.");
-  process.exit(1);
-}
-
-const [owner, repo] = process.env.GITHUB_REPOSITORY.split("/");
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+const [owner, repo] = process.env.GITHUB_REPOSITORY.split("/");
+
+const MERGE_LABEL = process.env.MERGE_LABEL || "bot";
+const REQUIRED_APPROVALS = parseInt(process.env.REQUIRED_APPROVALS || "2", 10);
+const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_SECONDS || "20", 10);
+const POLL_TIMEOUT = parseInt(process.env.POLL_TIMEOUT_SECONDS || "900", 10);
+
+const sleep = (s) => new Promise((r) => setTimeout(r, s * 1000));
 
 /**
- * Check if a given PR has at least 2 approvals and no outstanding change requests
+ * Get all open PRs
  */
-async function isPRApproved(prNumber) {
-  const reviewsRes = await octokit.pulls.listReviews({
-    owner, repo, pull_number: prNumber
+async function getOpenPRs() {
+  const { data } = await octokit.pulls.list({
+    owner,
+    repo,
+    state: "open",
+    per_page: 50,
   });
-  const reviews = reviewsRes.data;
-
-  // Consider only each user's latest review
-  const lastReviewByUser = {};
-  for (const r of reviews) {
-    lastReviewByUser[r.user.login] = r;
-  }
-
-  const approvals = Object.values(lastReviewByUser)
-    .filter(r => r.state === "APPROVED")
-    .map(r => r.user.login);
-
-  const hasBlockingChangeRequests = Object.values(lastReviewByUser)
-    .some(r => r.state === "CHANGES_REQUESTED");
-
-  const approvedCount = approvals.length;
-  console.log(`PR #${prNumber}: ${approvedCount} approvals, blocking changes: ${hasBlockingChangeRequests}`);
-
-  // Require at least 2 distinct approvers and no change requests
-  return true
+  return data;
 }
 
 /**
- * Update the PR branch by merging base -> head (so PR branch includes latest base).
- * Returns the merge result or throws if there is a conflict.
+ * Check if PR has enough approvals
  */
-async function updatePrBranch(pr) {
-  // We want to merge base (pr.base.ref) into head (pr.head.ref)
-  console.log(`Updating branch ${pr.head.ref} with ${pr.base.ref}`);
+async function hasEnoughApprovals(prNumber) {
+  const { data: reviews } = await octokit.pulls.listReviews({
+    owner,
+    repo,
+    pull_number: prNumber,
+  });
+  const approved = new Set(
+    reviews.filter((r) => r.state === "APPROVED").map((r) => r.user.login)
+  );
+  return approved.size >= REQUIRED_APPROVALS;
+}
+
+/**
+ * Wait for all external CI checks to pass for the PR's latest commit
+ */
+async function waitForChecks(prSha) {
+  const start = Date.now();
+  while ((Date.now() - start) / 1000 < POLL_TIMEOUT) {
+    const { data } = await octokit.checks.listForRef({ owner, repo, ref: prSha });
+    const checks = data.check_runs.filter(c => !c.name.includes("Auto Merge Bot"));
+
+    if (checks.length === 0) return true;
+
+    const allDone = checks.every(c => c.status === "completed");
+    const allSuccess = checks.every(c => c.conclusion === "success");
+
+    if (allDone && allSuccess) return true;
+    if (allDone && !allSuccess) return false;
+
+    console.log(`⏳ Waiting for checks on ${prSha}...`);
+    await sleep(POLL_INTERVAL);
+  }
+  console.log("⏰ Timeout waiting for checks.");
+  return false;
+}
+
+/**
+ * Process a single PR
+ */
+async function processPR(pr) {
+  console.log(`\n🔹 Processing PR #${pr.number}: ${pr.title}`);
+
+  const latestPR = (await octokit.pulls.get({ owner, repo, pull_number: pr.number })).data;
+
+  // Check label inside code
+  const hasLabel = latestPR.labels.some(l => l.name === MERGE_LABEL);
+  if (!hasLabel) {
+    console.log(`⚠️ PR #${pr.number} does not have label "${MERGE_LABEL}", skipping.`);
+    return;
+  }
+
+  if (latestPR.state !== "open" || latestPR.merged) {
+    console.log(`⚠️ PR #${pr.number} is closed or already merged, skipping.`);
+    return;
+  }
+
+  if (!(await hasEnoughApprovals(pr.number))) {
+    console.log(`⚠️ PR #${pr.number} does not have enough approvals, skipping.`);
+    return;
+  }
+
+  // Update branch with latest base branch changes
   try {
-    const mergeRes = await octokit.repos.merge({
-      owner, repo,
-      base: pr.head.ref,         // branch to update
-      head: pr.base.ref,         // branch to merge from (base branch)
-      commit_message: `chore: update ${pr.head.ref} with ${pr.base.ref}`
-    });
-    console.log("Merge update result:", mergeRes.status);
-    return mergeRes.data;
+    console.log(`🔄 Updating branch for PR #${pr.number}...`);
+    await octokit.pulls.updateBranch({ owner, repo, pull_number: pr.number });
   } catch (err) {
-    // If merge conflict, GitHub returns 409
-    if (err.status === 409) {
-      throw new Error("Merge conflict when updating branch");
-    }
-    throw err;
+    console.log(`⚠️ Could not update branch: ${err.message}`);
   }
-}
 
-/**
- * Wait for all checks to pass for the PR's head SHA.
- * Uses Checks API + combined status.
- */
-async function waitForChecksToPass(prHeadSha) {
-  const startAt = Date.now();
+  // Wait for external checks
+  const checksPassed = await waitForChecks(latestPR.head.sha);
+  if (!checksPassed) {
+    console.log(`❌ PR #${pr.number} failed checks or timed out, skipping.`);
+    return;
+  }
 
-  while (true) {
-    const checksRes = await octokit.checks.listForRef({
+  // Merge PR
+  try {
+    await octokit.pulls.merge({
       owner,
       repo,
-      ref: prHeadSha
+      pull_number: pr.number,
+      merge_method: "squash",
     });
-
-    const relevantChecks = checksRes.data.check_runs.filter(
-      check => check.name !== "Auto-Merge Workflow" // ignore this workflow
-    );
-
-    const allCompleted = relevantChecks.every(c => c.status === "completed");
-    const allSuccess = relevantChecks.every(c => c.conclusion === "success");
-
-    if (allCompleted && allSuccess) return true;
-    if (allCompleted && !allSuccess) return false;
-
-    if ((Date.now() - startAt) / 1000 > pollTimeoutSeconds) return false;
-
-    await new Promise(r => setTimeout(r, pollIntervalSeconds * 1000));
+    console.log(`🎉 PR #${pr.number} merged successfully!`);
+  } catch (err) {
+    console.log(`❌ Failed to merge PR #${pr.number}: ${err.message}`);
   }
 }
 
 /**
- * Merge PR with configured merge method.
+ * Main
  */
-async function mergePR(prNumber, commitTitle) {
-  try {
-    const res = await octokit.pulls.merge({
-      owner, repo,
-      pull_number: prNumber,
-      merge_method: mergeMethod,
-      commit_title: commitTitle
-    });
-    return res.data;
-  } catch (err) {
-    console.error("Merge failed:", err.message || err);
-    throw err;
+(async function main() {
+  console.log(`🚀 Auto Merge Bot started for ${owner}/${repo}`);
+  const prs = await getOpenPRs();
+  if (!prs.length) return console.log("No open PRs found.");
+
+  for (const pr of prs) {
+    await processPR(pr);
   }
-}
-
-/**
- * Process a single PR: check approved, update branch, wait checks, merge if green.
- */
-async function processPr(pr) {
-  console.log(`Processing PR #${pr.number} (${pr.title})`);
-  const approved = await isPRApproved(pr.number);
-  if (!approved) {
-    console.log(`#${pr.number} is not approved -> skipping`);
-    return { status: "skipped", reason: "not approved" };
-  }
-
-  // Update branch
-  try {
-    await updatePrBranch(pr);
-  } catch (err) {
-    console.log(`#${pr.number} update failed: ${err.message}`);
-    // leave label for manual resolution
-    return { status: "failed", reason: "update_failed", error: err.message };
-  }
-
-  // Re-fetch PR to get new head SHA
-  const prRes = await octokit.pulls.get({ owner, repo, pull_number: pr.number });
-  const headSha = prRes.data.head.sha;
-
-  // Wait for checks
-  const checksOk = await waitForChecksToPass(headSha);
-  if (!checksOk) {
-    console.log(`#${pr.number} checks did not pass -> skipping`);
-    return { status: "skipped", reason: "checks_failed_or_timeout" };
-  }
-
-  // Merge
-  try {
-    // const mergeRes = await mergePR(pr.number, `Merge PR #${pr.number}: ${pr.title}`);
-    console.log(`#${pr.number} merged:`, mergeRes.sha || mergeRes.message || mergeRes);
-    return { status: "merged", sha: mergeRes.sha || null };
-  } catch (err) {
-    console.log(`#${pr.number} merge error: ${err.message}`);
-    return { status: "failed", reason: "merge_error", error: err.message };
-  }
-}
-
-/**
- * Find PRs that are labeled with `labelToWatch` and are open.
- */
-async function findLabeledPRs() {
-  const pulls = [];
-  // Use list pulls and filter by labels (since list endpoint doesn't accept label param, use search)
-  const q = `repo:${owner}/${repo} is:open is:pr label:"${labelToWatch}"`;
-  const searchRes = await octokit.search.issuesAndPullRequests({ q, per_page: 100 });
-  for (const item of searchRes.data.items) {
-    // item.number is the PR number
-    const prRes = await octokit.pulls.get({ owner, repo, pull_number: item.number });
-    pulls.push(prRes.data);
-  }
-  return pulls;
-}
-
-async function run() {
-  try {
-    // The workflow is triggered on a single label event; we will process all matching PRs to catch queue
-    console.log(`Looking for PRs labeled "${labelToWatch}" in ${owner}/${repo}`);
-    const prs = await findLabeledPRs();
-
-    if (prs.length === 0) {
-      console.log("No labeled PRs found.");
-      return;
-    }
-
-    // Sort by created_at to process in FIFO order:
-    prs.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-    for (const pr of prs) {
-      const result = await processPr(pr);
-      console.log(`Result for #${pr.number}:`, result);
-
-      // If merged, continue to next PR in queue (repeat)
-      // If fail/skipped, continue as well so other PRs might be independent
-    }
-
-    console.log("Done processing labeled PRs.");
-  } catch (err) {
-    console.error("Fatal error:", err);
-    process.exit(1);
-  }
-}
-
-run();
+  console.log("✅ Auto Merge Bot run complete.");
+})();
